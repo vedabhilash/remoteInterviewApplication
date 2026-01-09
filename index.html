@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Futuristic Coastline Drive</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', monospace; }
+        
+        /* HUD UI */
+        #hud {
+            position: absolute;
+            top: 20px; left: 20px;
+            z-index: 10;
+            background: rgba(0, 10, 20, 0.85);
+            border: 1px solid #00ffff;
+            padding: 15px;
+            border-radius: 12px;
+            width: 260px;
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.2);
+        }
+
+        /* Mirrored Camera View */
+        #cam-container {
+            position: relative;
+            width: 100%; height: 160px;
+            transform: scaleX(-1); /* Mirror effect */
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 10px;
+            border: 1px solid #333;
+        }
+
+        #input_video { position: absolute; width: 100%; height: 100%; object-fit: cover; }
+        #output_canvas { position: absolute; width: 100%; height: 100%; }
+
+        .status { font-weight: bold; color: #00ffff; margin-bottom: 8px; display: block; }
+        .instruction { font-size: 11px; color: #ccc; line-height: 1.6; display: block; }
+        .highlight { color: #fff; font-weight: bold; }
+        .brake-alert { color: #ff3333; font-weight: bold; animation: blink 0.5s infinite; }
+
+        @keyframes blink { 50% { opacity: 0.5; } }
+
+        #loading {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: #00ffff; font-size: 24px;
+            pointer-events: none;
+            text-shadow: 0 0 15px #00ffff;
+        }
+    </style>
+
+    <!-- Imports -->
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="hud">
+        <div id="cam-container">
+            <video id="input_video" playsinline></video>
+            <canvas id="output_canvas"></canvas>
+        </div>
+        <span id="status-text" class="status">Initializing AI...</span>
+        <div class="instruction">
+            <span class="highlight">✋ Hand UP:</span> Drive Forward<br>
+            <span class="highlight">✊ Closed Fist:</span> BRAKE / STOP<br>
+            <span class="highlight">↔ Left/Right:</span> Steer
+        </div>
+    </div>
+
+    <div id="loading">GENERATING WORLD...</div>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- 1. SETUP & ATMOSPHERE ---
+        const scene = new THREE.Scene();
+        // Cinematic Sunset colors
+        const fogColor = 0xff9966; 
+        scene.background = new THREE.Color(fogColor);
+        scene.fog = new THREE.FogExp2(fogColor, 0.0015);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 4000);
+        camera.position.set(0, 50, -150);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+
+        const sunLight = new THREE.DirectionalLight(0xffddaa, 1.5);
+        sunLight.position.set(-300, 150, 500);
+        sunLight.castShadow = true;
+        // Increase shadow quality
+        sunLight.shadow.mapSize.width = 2048;
+        sunLight.shadow.mapSize.height = 2048;
+        scene.add(sunLight);
+
+        // Giant Sun Visual
+        const sunGeo = new THREE.CircleGeometry(400, 64);
+        const sunMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+        const sun = new THREE.Mesh(sunGeo, sunMat);
+        sun.position.set(0, 150, 3000);
+        scene.add(sun);
+
+
+        // --- 2. TERRAIN GENERATION ---
+        // Left: Green Hills | Center: Road | Right: Beach & Ocean
+        const CHUNK_SIZE = 6000;
+        const SEGMENTS = 200;
+        
+        const groundGeo = new THREE.PlaneGeometry(3000, CHUNK_SIZE, 120, SEGMENTS);
+        groundGeo.rotateX(-Math.PI / 2);
+        
+        const vertices = groundGeo.attributes.position.array;
+        const colors = [];
+        const colorObj = new THREE.Color();
+
+        // Colors
+        const C_ROAD = new THREE.Color(0x111111);
+        const C_GRASS = new THREE.Color(0x116611);
+        const C_ROCK = new THREE.Color(0x443322);
+        const C_SAND = new THREE.Color(0xffcc88);
+        const C_OCEAN = new THREE.Color(0x004488);
+
+        for (let i = 0; i < vertices.length; i += 3) {
+            const x = vertices[i];
+            let y = 0;
+            const z = vertices[i+2];
+
+            // 1. HILLS (Left < -80)
+            if (x < -80) {
+                // Noise for mountains
+                const noise = Math.sin(x * 0.01) * Math.cos(z * 0.005) * 120;
+                y = Math.abs(noise);
+                if (x < -500) y += 200; // High peaks
+                
+                const mix = Math.min(y / 150, 1);
+                colorObj.lerpColors(C_GRASS, C_ROCK, mix);
+            }
+            // 2. ROAD (Center -80 to 80)
+            else if (x >= -80 && x <= 80) {
+                y = 0;
+                colorObj.copy(C_ROAD);
+            }
+            // 3. BEACH (Right 80 to 400)
+            else if (x > 80 && x < 400) {
+                y = Math.sin(x*0.05) * 5 + 5;
+                colorObj.copy(C_SAND);
+            }
+            // 4. OCEAN FLOOR (Right > 400)
+            else {
+                y = -50;
+                colorObj.copy(C_OCEAN);
+            }
+
+            vertices[i+1] = y;
+            colors.push(colorObj.r, colorObj.g, colorObj.b);
+        }
+
+        groundGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+        const terrainMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.8 });
+        const terrain = new THREE.Mesh(groundGeo, terrainMat);
+        terrain.receiveShadow = true;
+        scene.add(terrain);
+
+        // --- 3. WATER & WAVES ---
+        const waterGeo = new THREE.PlaneGeometry(1500, CHUNK_SIZE, 50, SEGMENTS);
+        waterGeo.rotateX(-Math.PI/2);
+        waterGeo.translate(1200, -10, 0); // Position on right
+        const waterMat = new THREE.MeshPhongMaterial({ color: 0x0099ff, transparent: true, opacity: 0.6, shininess: 80 });
+        const ocean = new THREE.Mesh(waterGeo, waterMat);
+        scene.add(ocean);
+
+        // --- 4. WATERFALL (Left Side) ---
+        const wfCount = 4000;
+        const wfGeo = new THREE.BufferGeometry();
+        const wfPos = new Float32Array(wfCount * 3);
+        const wfOrigin = new THREE.Vector3(-400, 250, 0); 
+        
+        for(let i=0; i<wfCount; i++) {
+            wfPos[i*3] = wfOrigin.x + (Math.random()-0.5)*50;
+            wfPos[i*3+1] = wfOrigin.y - Math.random()*250;
+            wfPos[i*3+2] = (Math.random()-0.5)*80;
+        }
+        wfGeo.setAttribute('position', new THREE.BufferAttribute(wfPos, 3));
+        const wfMat = new THREE.PointsMaterial({ color: 0xccffff, size: 5, transparent: true, opacity: 0.6 });
+        const waterfall = new THREE.Points(wfGeo, wfMat);
+        scene.add(waterfall);
+
+        // --- 5. SHOPS (Right Side Beach) ---
+        const shopsGroup = new THREE.Group();
+        for(let i=0; i<15; i++) {
+            const hut = new THREE.Group();
+            // Base
+            const base = new THREE.Mesh(new THREE.BoxGeometry(40, 25, 40), new THREE.MeshLambertMaterial({color: 0x885522}));
+            base.position.y = 12.5;
+            hut.add(base);
+            // Roof
+            const roof = new THREE.Mesh(new THREE.ConeGeometry(30, 20, 4), new THREE.MeshLambertMaterial({color: Math.random()>0.5 ? 0xff4444 : 0x2222ff}));
+            roof.position.y = 35;
+            roof.rotation.y = Math.PI/4;
+            hut.add(roof);
+            
+            hut.position.set(200 + Math.random()*50, 0, i * 400 - 3000);
+            hut.rotation.y = -0.5;
+            hut.castShadow = true;
+            shopsGroup.add(hut);
+        }
+        scene.add(shopsGroup);
+
+        // --- 6. THE CAR ---
+        const carGroup = new THREE.Group();
+        
+        // Body
+        const chassis = new THREE.Mesh(
+            new THREE.BoxGeometry(28, 8, 55),
+            new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.2, metalness: 0.8 })
+        );
+        chassis.position.y = 9;
+        chassis.castShadow = true;
+        carGroup.add(chassis);
+
+        // Neon Glow
+        const neon = new THREE.Mesh(new THREE.BoxGeometry(29, 1, 56), new THREE.MeshBasicMaterial({ color: 0x00ffff }));
+        neon.position.y = 9;
+        carGroup.add(neon);
+
+        // Wheels
+        const wGeo = new THREE.CylinderGeometry(5, 5, 4, 16);
+        const wMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+        const wheels = [];
+        [-15, 15].forEach(x => [-18, 18].forEach(z => {
+            const w = new THREE.Mesh(wGeo, wMat);
+            w.rotation.z = Math.PI/2;
+            w.position.set(x, 5, z);
+            carGroup.add(w);
+            wheels.push(w);
+        }));
+
+        scene.add(carGroup);
+
+        // --- 7. AI HAND TRACKING ---
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const statusText = document.getElementById('status-text');
+        const loadingEl = document.getElementById('loading');
+
+        let isHandDetected = false;
+        let isBraking = false;
+        let steerTarget = 0;
+        let speedTarget = 0;
+
+        function onResults(results) {
+            loadingEl.style.display = 'none';
+            
+            // Draw Hand Skeleton
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                isHandDetected = true;
+                const lm = results.multiHandLandmarks[0];
+
+                // Draw Overlay
+                drawConnectors(canvasCtx, lm, HAND_CONNECTIONS, {color: '#00ffff', lineWidth: 2});
+                drawLandmarks(canvasCtx, lm, {color: '#ffffff', lineWidth: 1});
+
+                // --- CONTROLS LOGIC ---
+                
+                // 1. BRAKE CHECK (Fist)
+                // Compare Tip of Middle Finger (12) to Base of Finger (9)
+                // If tip is lower (higher Y value) than base, fingers are curled
+                const tipY = lm[12].y;
+                const baseY = lm[9].y;
+                
+                // Threshold for "closed"
+                if (tipY > baseY) {
+                    isBraking = true;
+                    statusText.innerText = "🛑 BRAKING (FIST)";
+                    statusText.className = "status brake-alert";
+                } else {
+                    isBraking = false;
+                    statusText.innerText = "🚀 DRIVING (HAND OPEN)";
+                    statusText.className = "status";
+                }
+
+                // 2. STEERING (X Axis)
+                const palmX = lm[9].x;
+                // Map 0..1 to -1..1 (Hand left = steer left, hand right = steer right)
+                const steerVal = (palmX - 0.5) * 2; 
+                steerTarget = steerVal * 60; // Max steering range
+
+                // 3. ACCELERATION (Y Axis)
+                const palmY = lm[9].y;
+                // Top of screen (0) = Fast. Bottom (1) = Slow.
+                // We create a "deadzone" at the bottom
+                speedTarget = Math.max(0, (0.8 - palmY) * 2);
+
+            } else {
+                isHandDetected = false;
+                statusText.innerText = "⚠️ SCANNING FOR HAND...";
+                statusText.className = "status";
+                isBraking = true; // Auto-brake if no hand
+            }
+            canvasCtx.restore();
+        }
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        
+        // High Sensitivity Settings
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.3, 
+            minTrackingConfidence: 0.3
+        });
+        hands.onResults(onResults);
+
+        const cam = new Camera(videoElement, {
+            onFrame: async () => await hands.send({image: videoElement}),
+            width: 320, height: 240
+        });
+        cam.start();
+
+        // Set canvas dimensions
+        function setCanvasDimensions() {
+            canvasElement.width = videoElement.videoWidth || 320;
+            canvasElement.height = videoElement.videoHeight || 240;
+        }
+        videoElement.addEventListener('loadedmetadata', setCanvasDimensions);
+
+
+        // --- 8. ANIMATION & PHYSICS ---
+        let currentSpeed = 0;
+        let maxSpeed = 10;
+        let time = 0;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            time += 0.05;
+
+            // --- CAR PHYSICS ---
+            if (isHandDetected) {
+                if (isBraking) {
+                    // Quick stop
+                    currentSpeed *= 0.8;
+                } else {
+                    // Accelerate based on hand height
+                    currentSpeed += (speedTarget * maxSpeed - currentSpeed) * 0.05;
+                }
+                
+                // Steering
+                carGroup.position.x += (steerTarget - carGroup.position.x) * 0.1;
+                
+                // Bank/Tilt logic
+                carGroup.rotation.z = (carGroup.position.x - steerTarget) * 0.005; 
+                carGroup.rotation.y = (steerTarget - carGroup.position.x) * 0.01;
+
+            } else {
+                // Friction stop
+                currentSpeed *= 0.95;
+                carGroup.rotation.set(0,0,0);
+            }
+
+            // Move Car Forward
+            carGroup.position.z += currentSpeed;
+
+            // Wheels Spin
+            wheels.forEach(w => w.rotation.x -= currentSpeed * 0.15);
+
+
+            // --- CAMERA FOLLOW ---
+            camera.position.z = carGroup.position.z - 120;
+            camera.position.x += (carGroup.position.x * 0.5 - camera.position.x) * 0.1;
+            camera.lookAt(carGroup.position.x, carGroup.position.y + 10, carGroup.position.z + 100);
+
+            
+            // --- ENVIRONMENT SCROLLING (Infinite World) ---
+            
+            // 1. Move Waterfall Ahead
+            if(waterfall.position.z < camera.position.z - 200) {
+                waterfall.position.z += 3000 + Math.random()*1000;
+            }
+            // Animate Waterfall particles
+            const wfArr = waterfall.geometry.attributes.position.array;
+            for(let i=1; i<wfArr.length; i+=3) {
+                wfArr[i] -= 4; // Fall down Y
+                if(wfArr[i] < 0) wfArr[i] = 250; // Reset height
+            }
+            waterfall.geometry.attributes.position.needsUpdate = true;
+
+            // 2. Move Shops Ahead
+            shopsGroup.children.forEach(shop => {
+                if(shop.position.z < camera.position.z - 100) {
+                    shop.position.z += 6000;
+                }
+            });
+
+            // 3. Infinite Terrain & Ocean
+            // If camera passes a certain point, jump the terrain forward
+            if(camera.position.z > terrain.position.z + 1000) {
+                terrain.position.z += 1000;
+                ocean.position.z += 1000;
+            }
+
+            // 4. Ocean Waves
+            const oceanVerts = ocean.geometry.attributes.position;
+            for(let i=0; i<oceanVerts.count; i++) {
+                const z = oceanVerts.getZ(i);
+                oceanVerts.setZ(i, Math.sin(time + i*0.1) * 2);
+            }
+            oceanVerts.needsUpdate = true;
+
+            // 5. Sun follows car (illusion of distance)
+            sun.position.z = carGroup.position.z + 3000;
+            sun.position.x = carGroup.position.x * 0.5;
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+
+    </script>
+</body>
+</html>
